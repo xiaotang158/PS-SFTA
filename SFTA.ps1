@@ -42,9 +42,104 @@
     
 #>
 
-
-
 function Get-FTA {
+    param(
+        [string]$Extension
+    )
+
+    if ($Extension) {
+      $progId = $null
+
+      $userChoicePath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\$Extension\UserChoice"
+      if (Test-Path $userChoicePath) {
+          try {
+              $progId = (Get-ItemProperty -Path $userChoicePath -ErrorAction Stop).ProgId
+          } catch {
+              $progId = $null
+          }
+      }
+
+      if (-not $progId) {
+          try {
+              $prop = Get-ItemProperty -Path "HKCU:\Software\Classes\$Extension" -ErrorAction Stop
+              if ($prop -and $prop.'(default)') {
+                  $progId = $prop.'(default)'
+              }
+          } catch {
+              $progId = $null
+          }
+      }
+
+      if (-not $progId) {
+          try {
+              $prop = Get-ItemProperty -Path "HKLM:\SOFTWARE\Classes\$Extension" -ErrorAction Stop
+              if ($prop -and $prop.'(default)') {
+                  $progId = $prop.'(default)'
+              }
+          } catch {
+              $progId = $null
+          }
+      }
+      if ($progId) { 
+          $progId 
+      } 
+    }
+    else {
+
+        $results = @{}
+
+        $ucRoot = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts"
+        if (Test-Path $ucRoot) {
+            foreach ($ext in Get-ChildItem $ucRoot | Where-Object { $_.PSChildName -like ".*" }) {
+                $ucPath = "$ucRoot\$($ext.PSChildName)\UserChoice"
+                if (Test-Path $ucPath) {
+                    $progId = (Get-ItemProperty $ucPath -ErrorAction SilentlyContinue).ProgId
+                    if ($progId) {
+                        $results[$ext.PSChildName] = $progId
+                    }
+                }
+            }
+        }
+
+        # HKCU\Classes
+        foreach ($ext in Get-ChildItem "HKCU:\Software\Classes" | Where-Object { $_.PSChildName -like ".*" }) {
+            if (-not $results.ContainsKey($ext.PSChildName)) {
+                try {
+                    $progId = (Get-ItemProperty -Path $ext.PSPath -ErrorAction Stop).'(default)'
+                } catch {
+                    $progId = $null
+                }
+                if ($progId) {
+                    $results[$ext.PSChildName] = $progId
+                }
+
+            }
+
+
+        }
+
+        # HKLM\Classes
+        foreach ($ext in Get-ChildItem "HKLM:\SOFTWARE\Classes" | Where-Object { $_.PSChildName -like ".*" }) {
+            if (-not $results.ContainsKey($ext.PSChildName)) {
+                try {
+                    $progId = (Get-ItemProperty -Path $ext.PSPath -ErrorAction Stop).'(default)'
+                } catch {
+                    $progId = $null
+                }
+                if ($progId) {
+                    $results[$ext.PSChildName] = $progId
+                }
+            }
+        }
+
+        $results.GetEnumerator() | Sort-Object Key | ForEach-Object {
+            "$($_.Key) : $($_.Value)"
+        }
+    }
+}
+
+
+function Get-FTA0 {
   [CmdletBinding()]
   param (
     [Parameter(Mandatory = $false)]
@@ -157,6 +252,149 @@ function Register-FTA {
 
 
 function Remove-FTA {
+  [CmdletBinding()]
+
+  param (
+        [Parameter(Position = 0, Mandatory = $true)]
+        [Alias("ProgId")]
+        [String]
+        $ProgramPath,
+
+        [Parameter(Position = 1, Mandatory = $true)]
+        [String]
+        $Extension
+    )
+  
+  function local:Remove-UserChoiceKey {
+    param (
+      [Parameter( Position = 0, Mandatory = $True )]
+      [String]
+      $Key
+    )
+
+    $code = @'
+    using System;
+    using System.Runtime.InteropServices;
+    using Microsoft.Win32;
+    
+    namespace Registry {
+      public class Utils {
+        [DllImport("advapi32.dll", SetLastError = true)]
+        private static extern int RegOpenKeyEx(UIntPtr hKey, string subKey, int ulOptions, int samDesired, out UIntPtr hkResult);
+    
+        [DllImport("advapi32.dll", SetLastError=true, CharSet = CharSet.Unicode)]
+        private static extern uint RegDeleteKey(UIntPtr hKey, string subKey);
+
+        public static void DeleteKey(string key) {
+          UIntPtr hKey = UIntPtr.Zero;
+          RegOpenKeyEx((UIntPtr)0x80000001u, key, 0, 0x20019, out hKey);
+          RegDeleteKey((UIntPtr)0x80000001u, key);
+        }
+      }
+    }
+'@
+
+    try {
+      Add-Type -TypeDefinition $code -ErrorAction SilentlyContinue
+    }
+    catch {}
+
+    try {
+      [Registry.Utils]::DeleteKey($Key)
+    }
+    catch {} 
+  } 
+
+  function local:Update-Registry {
+    $code = @'
+    [System.Runtime.InteropServices.DllImport("Shell32.dll")] 
+    private static extern int SHChangeNotify(int eventId, int flags, IntPtr item1, IntPtr item2);
+    public static void Refresh() {
+        SHChangeNotify(0x8000000, 0, IntPtr.Zero, IntPtr.Zero);    
+    }
+'@ 
+
+    try {
+      Add-Type -MemberDefinition $code -Namespace SHChange -Name Notify -ErrorAction SilentlyContinue
+    }
+    catch {}
+
+    try {
+      [SHChange.Notify]::Refresh()
+    }
+    catch {} 
+  }
+
+  if (Test-Path -Path $ProgramPath) {
+    $ProgId = "SFTA." + [System.IO.Path]::GetFileNameWithoutExtension($ProgramPath).replace(" ", "") + $Extension
+  }
+  else {
+    $ProgId = $ProgramPath
+  }
+
+  try {
+    $userChoiceKey = "Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\$Extension\UserChoice"
+    Write-Verbose "Remove User UserChoice Key If Exist: $userChoiceKey"
+    Remove-UserChoiceKey $userChoiceKey
+
+    $userProgIdKey = "HKCU:\SOFTWARE\Classes\$ProgId"
+    Write-Verbose "Remove User ProgId Key If Exist: $userProgIdKey"
+    Remove-Item -Path $userProgIdKey -Recurse -ErrorAction Stop | Out-Null
+
+    $userOpenWithKey = "HKCU:\SOFTWARE\Classes\$Extension\OpenWithProgids"
+    Write-Verbose "Remove User OpenWithProgids Property If Exist: $userOpenWithKey Property $ProgId"
+    Remove-ItemProperty -Path $userOpenWithKey -Name $ProgId -ErrorAction Stop | Out-Null
+  }
+  catch {
+    Write-Verbose "User key/property no exist or failed: $_"
+  } 
+
+  try {
+    $cuExtKey = "HKCU:\SOFTWARE\Classes\$Extension"
+    if (Test-Path $cuExtKey) {
+        Write-Verbose "Remove User Extension Key: $cuExtKey"
+        Remove-Item -Path $cuExtKey -Recurse -Force -ErrorAction Stop
+    }
+
+    $lmExtKey = "HKLM:\SOFTWARE\Classes\$Extension"
+    if (Test-Path $lmExtKey) {
+        Write-Verbose "Remove System Extension Key: $lmExtKey"
+        Remove-Item -Path $lmExtKey -Recurse -Force -ErrorAction Stop
+    }
+
+    $fileExtsbase = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\$Extension"
+
+    if (Test-Path $fileExtsbase) {
+        Remove-Item -Path $fileExtsbase -Recurse -Force
+    }
+
+    $sysExtensionKey = "HKLM:\SOFTWARE\Classes\$Extension"
+    Write-Verbose "Check System Extension Key: $sysExtensionKey"
+    
+    if (Test-Path $sysExtensionKey) {
+
+      $sysDefaultProgId = (Get-ItemProperty -Path $sysExtensionKey -ErrorAction Stop)."(default)"
+      if ($sysDefaultProgId -eq $ProgId) {
+        Write-Verbose "Remove System Extension Default ProgId value"
+        Set-ItemProperty -Path $sysExtensionKey -Name "(default)" -Value "" -ErrorAction Stop
+      }
+
+      $sysProgIdKey = "HKLM:\SOFTWARE\Classes\$ProgId"
+      if (Test-Path $sysProgIdKey) {
+        Write-Verbose "Remove System ProgId Key: $sysProgIdKey"
+        Remove-Item -Path $sysProgIdKey -Recurse -ErrorAction Stop | Out-Null
+      }
+    }
+  Update-Registry
+  Write-Output "Removed: $ProgId"
+}
+catch {
+    Write-Verbose "User key/property no exist or failed: $_"
+  } 
+}
+
+
+function Remove-FTA_orig {
   [CmdletBinding()]
   param (
     [Parameter(Mandatory = $true)]
