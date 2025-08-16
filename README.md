@@ -57,6 +57,25 @@ Remove-FTA  "360ChromeXURL" ".shtm"
 
 ```
 
+##### . Get the default program for a specific extension
+
+```powershell
+Get-FTA ".zip"
+```
+
+- Returns the ProgID associated with `.zip` files.
+
+
+##### . List all registered file extensions and their ProgIDs
+
+```powershell
+Get-FTA
+```
+
+- When called without parameters, it enumerates all file extensions that have a default program assigned.
+
+
+
 ## Additional Instructions
 
 ##### Set Microsoft Edge as Default .pdf reader from Windows Command Processor (cmd.exe):
