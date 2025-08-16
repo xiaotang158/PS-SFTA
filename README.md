@@ -51,6 +51,12 @@ Register-FTA "C:\SumatraPDF.exe" .pdf -Icon "shell32.dll,100"
 
 ```
 
+##### Remove:
+```powershell
+Remove-FTA  "360ChromeXURL" ".shtm"
+
+```
+
 ## Additional Instructions
 
 ##### Set Microsoft Edge as Default .pdf reader from Windows Command Processor (cmd.exe):
